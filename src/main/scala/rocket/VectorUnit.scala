@@ -31,6 +31,7 @@ class VectorCoreIO(implicit p: Parameters) extends CoreBundle()(p) {
     val vstart = Input(UInt(log2Ceil(maxVLMax).W))
     val rs1 = Input(UInt(xLen.W))
     val rs2 = Input(UInt(xLen.W))
+    val vofs = Input(UInt(xLen.W))
   }
   val killm = Input(Bool())
   val mem = new Bundle {

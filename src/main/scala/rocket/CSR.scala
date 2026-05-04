@@ -5,6 +5,7 @@ package freechips.rocketchip.rocket
 
 import chisel3._
 import chisel3.util.{BitPat, Cat, Fill, Mux1H, PopCount, PriorityMux, RegEnable, UIntToOH, Valid, log2Ceil, log2Up}
+import chisel3.util.experimental.BoringUtils
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.devices.debug.DebugModuleKey
 import freechips.rocketchip.tile._
@@ -14,6 +15,10 @@ import freechips.rocketchip.util.property
 import scala.collection.mutable.LinkedHashMap
 import Instructions._
 import CustomInstructions._
+
+object SmrfWormhole {
+  var sourceRegistered = false
+}
 
 class MStatus extends Bundle {
   // not truly part of mstatus, but convenient
@@ -212,6 +217,8 @@ object CSR
   val hpmWidth = 40
 
   val maxPMPs = 16
+
+  val custom_vofs = 0x804
 }
 
 class PerfCounterIO(implicit p: Parameters) extends CoreBundle
@@ -316,6 +323,7 @@ class CSRFileIO(hasBeu: Boolean)(implicit p: Parameters) extends CoreBundle
     val set_vstart = Flipped(Valid(vstart))
     val set_vxsat = Input(Bool())
   })
+  val vofs_out = Output(UInt(xLen.W))
 }
 
 class VConfig(implicit p: Parameters) extends CoreBundle {
@@ -385,9 +393,10 @@ class CSRFile(
     val customCSRs = Vec(CSRFile.this.customCSRs.size, new CustomCSRIO)
     val roccCSRs = Vec(CSRFile.this.roccCSRs.size, new CustomCSRIO)
   })
+  val reg_vofs = RegInit(0.U(xLen.W))
+  chisel3.dontTouch(reg_vofs)
 
   io.rw_stall := false.B
-
   val reset_mstatus = WireDefault(0.U.asTypeOf(new MStatus()))
   reset_mstatus.mpp := PRV.M.U
   reset_mstatus.prv := PRV.M.U
@@ -651,6 +660,7 @@ class CSRFile(
   val read_stvec = formTVec(reg_stvec).sextTo(xLen)
 
   val read_mapping = LinkedHashMap[Int,Bits](
+    CSR.custom_vofs -> reg_vofs, // 추가: 0x804 주소를 reg_vofs와 연결
     CSRs.tselect -> reg_tselect,
     CSRs.tdata1 -> reg_bp(reg_tselect).control.asUInt,
     CSRs.tdata2 -> reg_bp(reg_tselect).address.sextTo(xLen),
@@ -1223,9 +1233,10 @@ class CSRFile(
   val csr_wen = io.rw.cmd.isOneOf(CSR.S, CSR.C, CSR.W) && !io.rw_stall
   io.csrw_counter := Mux(coreParams.haveBasicCounters.B && csr_wen && (io.rw.addr.inRange(CSRs.mcycle.U, (CSRs.mcycle + CSR.nCtr).U) || io.rw.addr.inRange(CSRs.mcycleh.U, (CSRs.mcycleh + CSR.nCtr).U)), UIntToOH(io.rw.addr(log2Ceil(CSR.nCtr+nPerfCounters)-1, 0)), 0.U)
   when (csr_wen) {
+    when (decoded_addr(CSR.custom_vofs)) { reg_vofs := wdata }    
     val scause_mask = ((BigInt(1) << (xLen-1)) + 31).U /* only implement 5 LSBs and MSB */
     val satp_valid_modes = 0 +: (minPgLevels to pgLevels).map(new PTBR().pgLevelsToMode(_))
-
+    
     when (decoded_addr(CSRs.mstatus)) {
       val new_mstatus = wdata.asTypeOf(new MStatus())
       reg_mstatus.mie := new_mstatus.mie
@@ -1668,4 +1679,7 @@ class CSRFile(
   def isaStringToMask(s: String) = s.map(x => 1 << (x - 'A')).foldLeft(0)(_|_)
   def formFS(fs: UInt) = if (coreParams.haveFSDirty) fs else Fill(2, fs.orR)
   def formVS(vs: UInt) = if (usingVector) vs else 0.U
-}
+
+  io.vofs_out := reg_vofs
+} 
+
