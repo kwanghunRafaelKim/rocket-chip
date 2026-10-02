@@ -214,6 +214,7 @@ object CSR
   val maxPMPs = 16
 
   val custom_vofs = 0x804
+  val custom_vofsctl = 0x805   // SMRF-VOFS-NOFLUSH: bit0 = csrw 0x804 without pipeline flush
 }
 
 class PerfCounterIO(implicit p: Parameters) extends CoreBundle
@@ -390,6 +391,8 @@ class CSRFile(
   })
   val reg_vofs = RegInit(0.U(xLen.W))
   chisel3.dontTouch(reg_vofs)
+  val reg_vofsctl = RegInit(false.B)   // SMRF-VOFS-NOFLUSH (reset 0 = original behavior)
+  chisel3.dontTouch(reg_vofsctl)
 
   io.rw_stall := false.B
   val reset_mstatus = WireDefault(0.U.asTypeOf(new MStatus()))
@@ -656,6 +659,7 @@ class CSRFile(
 
   val read_mapping = LinkedHashMap[Int,Bits](
     CSR.custom_vofs -> reg_vofs, // 추가: 0x804 주소를 reg_vofs와 연결
+    CSR.custom_vofsctl -> reg_vofsctl.asUInt, // SMRF-VOFS-NOFLUSH
     CSRs.tselect -> reg_tselect,
     CSRs.tdata1 -> reg_bp(reg_tselect).control.asUInt,
     CSRs.tdata2 -> reg_bp(reg_tselect).address.sextTo(xLen),
@@ -935,7 +939,8 @@ class CSRFile(
     io_dec.write_illegal := addr(11,10).andR
     io_dec.write_flush := {
       val addr_m = addr | (PRV.M.U << CSR.modeLSB)
-      !(addr_m >= CSRs.mscratch.U && addr_m <= CSRs.mtval.U)
+      !(addr_m >= CSRs.mscratch.U && addr_m <= CSRs.mtval.U) &&
+        !(addr === CSR.custom_vofs.U && reg_vofsctl)   // SMRF-VOFS-NOFLUSH
     }
     io_dec.system_illegal := !csr_addr_legal && !is_hlsv ||
       is_wfi && !allow_wfi ||
@@ -1228,6 +1233,7 @@ class CSRFile(
   val csr_wen = io.rw.cmd.isOneOf(CSR.S, CSR.C, CSR.W) && !io.rw_stall
   io.csrw_counter := Mux(coreParams.haveBasicCounters.B && csr_wen && (io.rw.addr.inRange(CSRs.mcycle.U, (CSRs.mcycle + CSR.nCtr).U) || io.rw.addr.inRange(CSRs.mcycleh.U, (CSRs.mcycleh + CSR.nCtr).U)), UIntToOH(io.rw.addr(log2Ceil(CSR.nCtr+nPerfCounters)-1, 0)), 0.U)
   when (csr_wen) {
+    when (decoded_addr(CSR.custom_vofsctl)) { reg_vofsctl := wdata(0) }   // SMRF-VOFS-NOFLUSH
     when (decoded_addr(CSR.custom_vofs)) { reg_vofs := wdata }    
     val scause_mask = ((BigInt(1) << (xLen-1)) + 31).U /* only implement 5 LSBs and MSB */
     val satp_valid_modes = 0 +: (minPgLevels to pgLevels).map(new PTBR().pgLevelsToMode(_))
