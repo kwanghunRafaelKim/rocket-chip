@@ -13,6 +13,9 @@ import freechips.rocketchip.util.property
 import scala.collection.mutable.ArrayBuffer
 import freechips.rocketchip.trace._
 
+// Enabled only by the single-bank ALU/MAC research configs.
+case object EnableVofsSnapshotInterlock extends org.chipsalliance.cde.config.Field[Boolean](false)
+
 case class RocketCoreParams(
   xLen: Int = 64,
   pgLevels: Int = 3, // sv39 default
@@ -923,7 +926,19 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val vsplit_on  = csr.io.vofs_mode_out(0)
     val vsplit_ld  = ex_reg_inst(6,0) === "b0000111".U
     val vsplit_st  = ex_reg_inst(6,0) === "b0100111".U
-    v.ex.vofs := Mux(vsplit_on && vsplit_ld, csr.io.vofs_l_out, Mux(vsplit_on && vsplit_st, csr.io.vofs_s_out, csr.io.vofs_out))
+    // Mode bit0: LOAD/STORE CSRs; bit1: dedicated integer MUL/MAC CSR.
+    // Match IntegerMultiplyFactory: OPMVV/OPMVX plus vsmul.vv/vx (not vmvNr.vi).
+    val vm_f3 = ex_reg_inst(14,12)
+    val vm_f6 = ex_reg_inst(31,26)
+    val vm_opm = (vm_f3 === 2.U || vm_f3 === 6.U) &&
+      vm_f6.isOneOf(36.U, 37.U, 38.U, 39.U, 41.U, 43.U, 45.U, 47.U,
+        56.U, 58.U, 59.U, 60.U, 61.U, 62.U, 63.U)
+    val vm_smul = (vm_f3 === 0.U || vm_f3 === 4.U) && vm_f6 === 39.U
+    val vm_mac = ex_reg_inst(6,0) === "b1010111".U && (vm_opm || vm_smul)
+    val arithmetic_vofs = Mux(csr.io.vofs_mode_out(1) && vm_mac,
+      csr.io.vofs_m_out, csr.io.vofs_out)
+    v.ex.vofs := Mux(vsplit_on && vsplit_ld, csr.io.vofs_l_out,
+      Mux(vsplit_on && vsplit_st, csr.io.vofs_s_out, arithmetic_vofs))
     when (v.wb.retire || v.wb.xcpt || wb_ctrl.vec) {
       csr.io.pc := v.wb.pc
       csr.io.retire := v.wb.retire
@@ -1080,7 +1095,18 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
   val rocc_blocked = Reg(Bool())
   rocc_blocked := !wb_xcpt && !io.rocc.cmd.ready && (io.rocc.cmd.valid || rocc_blocked)
 
+  // VOFS is sampled in vector EX, while CSR updates commit later.
+  // No-flush removes pipeline flushes, not this ordering dependency.
+  def isVofsCsr(inst: UInt): Bool = inst(31,20).isOneOf(
+    CSR.custom_vofs.U, CSR.custom_vofs_m.U, CSR.custom_vofs_l.U,
+    CSR.custom_vofs_s.U, CSR.custom_vofs_mode.U, CSR.custom_vofsctl.U)
+  val pending_vofs_csr =
+    (ex_reg_valid && ex_ctrl.csr =/= CSR.N && isVofsCsr(ex_reg_inst)) ||
+    (mem_reg_valid && mem_ctrl.csr =/= CSR.N && isVofsCsr(mem_reg_inst)) ||
+    (wb_reg_valid && wb_ctrl.csr =/= CSR.N && isVofsCsr(wb_reg_inst))
+  val id_vofs_hazard = p(EnableVofsSnapshotInterlock).B && id_ctrl.vec && pending_vofs_csr
   val ctrl_stalld =
+    id_vofs_hazard ||
     id_ex_hazard || id_mem_hazard || id_wb_hazard || id_sboard_hazard ||
     id_vconfig_hazard ||
     csr.io.singleStep && (ex_reg_valid || mem_reg_valid || wb_reg_valid) ||
