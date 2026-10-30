@@ -769,6 +769,22 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
   val replay_wb_vec = wb_reg_valid && io.vector.map(_.wb.replay).getOrElse(false.B)
   val replay_wb = replay_wb_common || replay_wb_rocc || replay_wb_csr || replay_wb_vec
   take_pc_wb := replay_wb || wb_xcpt || csr.io.eret || wb_reg_flush_pipe
+  // [MECH-PRINTF] RK_EV begin (printf only, no logic change)
+  val dbg_cyc_rk = RegInit(0.U(32.W)); dbg_cyc_rk := dbg_cyc_rk + 1.U
+  when (replay_wb) {
+    printf("[RK_RPL] cyc=%d pc=%x vec=%d csr=%d common=%d rocc=%d\n",
+      dbg_cyc_rk, wb_reg_pc, replay_wb_vec, replay_wb_csr, replay_wb_common, replay_wb_rocc)
+  }
+  when (ex_reg_valid && replay_ex_structural) {
+    printf("[RK_EXRPL] cyc=%d pc=%x vec=%d dmem=%d\n", dbg_cyc_rk, ex_reg_pc, ex_ctrl.vec, ex_ctrl.mem)
+  }
+  when (mem_reg_valid && (vec_kill_mem || vec_kill_all)) {
+    printf("[RK_VKILL] cyc=%d pc=%x mem=%d all=%d\n", dbg_cyc_rk, mem_reg_pc, vec_kill_mem, vec_kill_all)
+  }
+  when (wb_reg_valid && wb_reg_flush_pipe) {
+    printf("[RK_FLUSH] cyc=%d pc=%x\n", dbg_cyc_rk, wb_reg_pc)
+  }
+  // [MECH-PRINTF] RK_EV end
 
   // writeback arbitration
   val dmem_resp_xpu = !io.dmem.resp.bits.tag(0).asBool
@@ -902,7 +918,12 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
   }
 
   io.vector.foreach { v =>
-    v.ex.vofs := csr.io.vofs_out
+    // [VOFS-SPLIT v33] MODE bit0 = 1: vector loads take VOFS_L, vector stores VOFS_S, everything else VOFS (0x804).
+    //   v.ex.vofs is captured with v.ex.inst (= ex_reg_inst) by the PFC; MODE = 0 -> identical to the original wire.
+    val vsplit_on  = csr.io.vofs_mode_out(0)
+    val vsplit_ld  = ex_reg_inst(6,0) === "b0000111".U
+    val vsplit_st  = ex_reg_inst(6,0) === "b0100111".U
+    v.ex.vofs := Mux(vsplit_on && vsplit_ld, csr.io.vofs_l_out, Mux(vsplit_on && vsplit_st, csr.io.vofs_s_out, csr.io.vofs_out))
     when (v.wb.retire || v.wb.xcpt || wb_ctrl.vec) {
       csr.io.pc := v.wb.pc
       csr.io.retire := v.wb.retire
@@ -1075,6 +1096,23 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     id_reg_pause ||
     io.traceStall
   ctrl_killd := !ibuf.io.inst(0).valid || ibuf.io.inst(0).bits.replay || take_pc_mem_wb || ctrl_stalld || csr.io.interrupt
+  // [MECH-PRINTF] RK_STALL begin (printf only, no logic change)
+  val dbg_rk_word = Cat(ctrl_stalld, id_ex_hazard, id_mem_hazard, id_wb_hazard, id_sboard_hazard, id_vconfig_hazard, ibuf.io.inst(0).valid)
+  when (dbg_rk_word =/= RegNext(dbg_rk_word, 0.U)) {
+    printf("[RK_STALL] cyc=%d stall=%d ex=%d mem=%d wb=%d sb=%d vcfg=%d ibv=%d\n", dbg_cyc_rk,
+      ctrl_stalld, id_ex_hazard, id_mem_hazard, id_wb_hazard, id_sboard_hazard, id_vconfig_hazard, ibuf.io.inst(0).valid)
+  }
+  when (wb_valid && wb_ctrl.csr =/= CSR.N && wb_reg_inst(31,20) === 0x804.U) {
+    printf("[RK_VOFS] cyc=%d pc=%x\n", dbg_cyc_rk, wb_reg_pc)
+  }
+  // [BACKEND-BUSY-FIX] RK_BB begin (printf only, no logic change)
+  val dbg_rk_bb = Cat(io.vector.map(_.backend_busy).getOrElse(false.B), io.vector.map(_.trap_check_busy).getOrElse(false.B),
+                      ibuf.io.inst(0).valid && id_ctrl.fence && id_do_fence)
+  when (dbg_rk_bb =/= RegNext(dbg_rk_bb, 0.U)) {
+    printf("[RK_BB] cyc=%d bb=%d tcb=%d fence_stall=%d\n", dbg_cyc_rk, dbg_rk_bb(2), dbg_rk_bb(1), dbg_rk_bb(0))
+  }
+  // [BACKEND-BUSY-FIX] RK_BB end
+  // [MECH-PRINTF] RK_STALL end
 
   io.imem.req.valid := take_pc
   io.imem.req.bits.speculative := !take_pc_wb
