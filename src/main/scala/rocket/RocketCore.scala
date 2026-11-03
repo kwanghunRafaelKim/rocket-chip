@@ -935,8 +935,10 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
         56.U, 58.U, 59.U, 60.U, 61.U, 62.U, 63.U)
     val vm_smul = (vm_f3 === 0.U || vm_f3 === 4.U) && vm_f6 === 39.U
     val vm_mac = ex_reg_inst(6,0) === "b1010111".U && (vm_opm || vm_smul)
-    val arithmetic_vofs = Mux(csr.io.vofs_mode_out(1) && vm_mac,
-      csr.io.vofs_m_out, csr.io.vofs_out)
+    // OPFVV/OPFVF go to the FP sequencer; mode bit2 gives them their own VOFS
+    val vm_fp = ex_reg_inst(6,0) === "b1010111".U && (vm_f3 === 1.U || vm_f3 === 5.U)
+    val arithmetic_vofs = Mux(csr.io.vofs_mode_out(2) && vm_fp, csr.io.vofs_f_out,
+      Mux(csr.io.vofs_mode_out(1) && vm_mac, csr.io.vofs_m_out, csr.io.vofs_out))
     v.ex.vofs := Mux(vsplit_on && vsplit_ld, csr.io.vofs_l_out,
       Mux(vsplit_on && vsplit_st, csr.io.vofs_s_out, arithmetic_vofs))
     when (v.wb.retire || v.wb.xcpt || wb_ctrl.vec) {
@@ -1098,7 +1100,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
   // VOFS is sampled in vector EX, while CSR updates commit later.
   // No-flush removes pipeline flushes, not this ordering dependency.
   def isVofsCsr(inst: UInt): Bool = inst(31,20).isOneOf(
-    CSR.custom_vofs.U, CSR.custom_vofs_m.U, CSR.custom_vofs_l.U,
+    CSR.custom_vofs.U, CSR.custom_vofs_m.U, CSR.custom_vofs_f.U, CSR.custom_vofs_l.U,
     CSR.custom_vofs_s.U, CSR.custom_vofs_mode.U, CSR.custom_vofsctl.U)
   val pending_vofs_csr =
     (ex_reg_valid && ex_ctrl.csr =/= CSR.N && isVofsCsr(ex_reg_inst)) ||

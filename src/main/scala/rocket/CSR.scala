@@ -214,6 +214,7 @@ object CSR
   val maxPMPs = 16
 
   val custom_vofs_m = 0x809 // MAC VOFS; mode bit1 selects it
+  val custom_vofs_f = 0x80a // FP VOFS; mode bit2 selects it
   val custom_vofs = 0x804
   val custom_vofs_l = 0x806      // [VOFS-SPLIT v33] vector-load VOFS (MODE bit0 = 1)
   val custom_vofs_s = 0x807      // [VOFS-SPLIT v33] vector-store VOFS (MODE bit0 = 1)
@@ -324,6 +325,7 @@ class CSRFileIO(hasBeu: Boolean)(implicit p: Parameters) extends CoreBundle
     val set_vxsat = Input(Bool())
   })
   val vofs_m_out = Output(UInt(xLen.W))
+  val vofs_f_out = Output(UInt(xLen.W))
   val vofs_out = Output(UInt(xLen.W))
   val vofs_l_out = Output(UInt(xLen.W))      // [VOFS-SPLIT v33]
   val vofs_s_out = Output(UInt(xLen.W))      // [VOFS-SPLIT v33]
@@ -398,6 +400,7 @@ class CSRFile(
     val roccCSRs = Vec(CSRFile.this.roccCSRs.size, new CustomCSRIO)
   })
   val reg_vofs_m = RegInit(0.U(xLen.W))
+  val reg_vofs_f = RegInit(0.U(xLen.W))
   val reg_vofs = RegInit(0.U(xLen.W))
   val reg_vofs_l = RegInit(0.U(xLen.W)); chisel3.dontTouch(reg_vofs_l)       // [VOFS-SPLIT v33]
   val reg_vofs_s = RegInit(0.U(xLen.W)); chisel3.dontTouch(reg_vofs_s)       // [VOFS-SPLIT v33]
@@ -671,6 +674,7 @@ class CSRFile(
 
   val read_mapping = LinkedHashMap[Int,Bits](
     CSR.custom_vofs_m -> reg_vofs_m,
+    CSR.custom_vofs_f -> reg_vofs_f,
     CSR.custom_vofs -> reg_vofs, // 추가: 0x804 주소를 reg_vofs와 연결
     CSR.custom_vofs_l -> reg_vofs_l,       // [VOFS-SPLIT v33]
     CSR.custom_vofs_s -> reg_vofs_s,       // [VOFS-SPLIT v33]
@@ -956,7 +960,7 @@ class CSRFile(
     io_dec.write_flush := {
       val addr_m = addr | (PRV.M.U << CSR.modeLSB)
       !(addr_m >= CSRs.mscratch.U && addr_m <= CSRs.mtval.U) &&
-        !((addr === CSR.custom_vofs_m.U || addr === CSR.custom_vofs.U || addr === CSR.custom_vofs_l.U || addr === CSR.custom_vofs_s.U || addr === CSR.custom_vofs_mode.U) && reg_vofsctl)   /* [VOFS-SPLIT v33] no-flush parity */   // SMRF-VOFS-NOFLUSH
+        !((addr === CSR.custom_vofs_m.U || addr === CSR.custom_vofs_f.U || addr === CSR.custom_vofs.U || addr === CSR.custom_vofs_l.U || addr === CSR.custom_vofs_s.U || addr === CSR.custom_vofs_mode.U) && reg_vofsctl)   /* [VOFS-SPLIT v33] no-flush parity */   // SMRF-VOFS-NOFLUSH
     }
     io_dec.system_illegal := !csr_addr_legal && !is_hlsv ||
       is_wfi && !allow_wfi ||
@@ -1251,6 +1255,7 @@ class CSRFile(
   when (csr_wen) {
     when (decoded_addr(CSR.custom_vofsctl)) { reg_vofsctl := wdata(0) }   // SMRF-VOFS-NOFLUSH
     when (decoded_addr(CSR.custom_vofs_m)) { reg_vofs_m := wdata }
+    when (decoded_addr(CSR.custom_vofs_f)) { reg_vofs_f := wdata }
     when (decoded_addr(CSR.custom_vofs)) { reg_vofs := wdata }
     when (decoded_addr(CSR.custom_vofs_l)) { reg_vofs_l := wdata }       // [VOFS-SPLIT v33]
     when (decoded_addr(CSR.custom_vofs_s)) { reg_vofs_s := wdata }       // [VOFS-SPLIT v33]
@@ -1703,6 +1708,7 @@ class CSRFile(
   def formVS(vs: UInt) = if (usingVector) vs else 0.U
 
   io.vofs_m_out := reg_vofs_m
+  io.vofs_f_out := reg_vofs_f
   io.vofs_out := reg_vofs
   io.vofs_l_out := reg_vofs_l        // [VOFS-SPLIT v33]
   io.vofs_s_out := reg_vofs_s        // [VOFS-SPLIT v33]
